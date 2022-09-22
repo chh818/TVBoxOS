@@ -32,6 +32,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.lifecycle.Observer;
 import androidx.lifecycle.ViewModelProvider;
+import androidx.recyclerview.widget.DiffUtil;
 
 import com.github.catvod.crawler.Spider;
 import com.github.tvbox.osc.R;
@@ -39,12 +40,19 @@ import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.base.BaseLazyFragment;
 import com.github.tvbox.osc.bean.ParseBean;
 import com.github.tvbox.osc.bean.SourceBean;
+import com.github.tvbox.osc.bean.Subtitle;
 import com.github.tvbox.osc.bean.VodInfo;
 import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.event.RefreshEvent;
+import com.github.tvbox.osc.player.IjkMediaPlayer;
+import com.github.tvbox.osc.player.MyVideoView;
+import com.github.tvbox.osc.player.TrackInfo;
+import com.github.tvbox.osc.player.TrackInfoBean;
 import com.github.tvbox.osc.player.controller.VodController;
-import com.github.tvbox.osc.player.thirdparty.MXPlayer;
-import com.github.tvbox.osc.player.thirdparty.ReexPlayer;
+import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
+import com.github.tvbox.osc.ui.dialog.SearchSubtitleDialog;
+import com.github.tvbox.osc.ui.dialog.SelectDialog;
+import com.github.tvbox.osc.ui.dialog.SubtitleDialog;
 import com.github.tvbox.osc.util.AdBlocker;
 import com.github.tvbox.osc.util.DefaultConfig;
 import com.github.tvbox.osc.util.HawkConfig;
@@ -58,9 +66,11 @@ import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.AbsCallback;
 import com.lzy.okgo.model.HttpHeaders;
 import com.lzy.okgo.model.Response;
+import com.obsez.android.lib.filechooser.ChooserDialog;
 import com.orhanobut.hawk.Hawk;
 
 import org.greenrobot.eventbus.EventBus;
+import org.jetbrains.annotations.NotNull;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.xwalk.core.XWalkJavascriptResult;
@@ -72,19 +82,21 @@ import org.xwalk.core.XWalkWebResourceRequest;
 import org.xwalk.core.XWalkWebResourceResponse;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import me.jessyan.autosize.AutoSize;
+import xyz.doikki.videoplayer.player.AbstractPlayer;
 import xyz.doikki.videoplayer.player.ProgressManager;
-import xyz.doikki.videoplayer.player.VideoView;
 
 public class PlayFragment extends BaseLazyFragment {
-    private VideoView mVideoView;
+    private MyVideoView mVideoView;
     private TextView mPlayLoadTip;
     private ImageView mPlayLoadErr;
     private ProgressBar mPlayLoading;
@@ -186,8 +198,133 @@ public class PlayFragment extends BaseLazyFragment {
             public void errReplay() {
                 errorWithRetry("视频播放出错", false);
             }
+
+            @Override
+            public void selectSubtitle() {
+                SubtitleDialog subtitleDialog = new SubtitleDialog(getActivity());
+                subtitleDialog.setSubtitleViewListener(new SubtitleDialog.SubtitleViewListener() {
+                    @Override
+                    public void setTextSize(int size) {
+                        mController.mSubtitleView.setTextSize(size);
+                    }
+                    @Override
+                    public void setSubtitleDelay(int milliseconds) {
+                        mController.mSubtitleView.setSubtitleDelay(milliseconds);
+                    }
+                });
+                subtitleDialog.setSearchSubtitleListener(new SubtitleDialog.SearchSubtitleListener() {
+                    @Override
+                    public void openSearchSubtitleDialog() {
+                        SearchSubtitleDialog searchSubtitleDialog = new SearchSubtitleDialog(getContext());
+                        searchSubtitleDialog.setSubtitleLoader(new SearchSubtitleDialog.SubtitleLoader() {
+                            @Override
+                            public void loadSubtitle(Subtitle subtitle) {
+
+                                requireActivity().runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        String zimuUrl = subtitle.getUrl();
+                                        LOG.i("Remote Subtitle Url: " + zimuUrl);
+                                        setSubtitle(zimuUrl);//设置字幕
+                                    }
+                                });
+                            }
+                        });
+                        searchSubtitleDialog.show();
+                    }
+                });
+                subtitleDialog.setLocalFileChooserListener(new SubtitleDialog.LocalFileChooserListener() {
+                    @Override
+                    public void openLocalFileChooserDialog() {
+                        new ChooserDialog(getActivity())
+                                .withFilter(false, false, "srt", "ass", "scc", "stl", "ttml")
+                                .withStartFile("/storage/emulated/0/Download")
+                                .withChosenListener(new ChooserDialog.Result() {
+                                    @Override
+                                    public void onChoosePath(String path, File pathFile) {
+                                        LOG.i("Local Subtitle Path: " + path);
+                                        setSubtitle(path);//设置字幕
+                                    }
+                                })
+                                .build()
+                                .show();
+                    }
+                });
+                subtitleDialog.show();
+            }
+
+            @Override
+            public void selectAudioTrack() {
+                AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
+                if (!(mediaPlayer instanceof IjkMediaPlayer)) {
+                    return;
+                }
+                TrackInfo trackInfo = null;
+                if (mediaPlayer instanceof IjkMediaPlayer) {
+                    trackInfo = ((IjkMediaPlayer)mediaPlayer).getTrackInfo();
+                }
+                if (trackInfo == null) {
+                    Toast.makeText(mContext, "没有音轨", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                List<TrackInfoBean> bean = trackInfo.getAudio();
+                if (bean.size() < 1) return;
+                SelectDialog<TrackInfoBean> dialog = new SelectDialog<>(getActivity());
+                dialog.setTip("切换音轨");
+                dialog.setAdapter(new SelectDialogAdapter.SelectDialogInterface<TrackInfoBean>() {
+                    @Override
+                    public void click(TrackInfoBean value, int pos) {
+                        try {
+                            for (TrackInfoBean audio : bean) {
+                                audio.selected = audio.index == value.index;
+                            }
+                            mediaPlayer.pause();
+                            long progress = mediaPlayer.getCurrentPosition();//保存当前进度，ijk 切换轨道 会有快进几秒
+                            if (mediaPlayer instanceof IjkMediaPlayer) {
+                                ((IjkMediaPlayer)mediaPlayer).setTrack(value.index);
+                            }
+                            new Handler().postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    mediaPlayer.seekTo(progress);
+                                    mediaPlayer.start();
+                                }
+                            }, 800);
+                            dialog.dismiss();
+                        } catch (Exception e) {
+                            LOG.e("切换音轨出错");
+                        }
+                    }
+
+                    @Override
+                    public String getDisplay(TrackInfoBean val) {
+                        return val.index + " : " + val.language;
+                    }
+                }, new DiffUtil.ItemCallback<TrackInfoBean>() {
+                    @Override
+                    public boolean areItemsTheSame(@NonNull @NotNull TrackInfoBean oldItem, @NonNull @NotNull TrackInfoBean newItem) {
+                        return oldItem.index == newItem.index;
+                    }
+
+                    @Override
+                    public boolean areContentsTheSame(@NonNull @NotNull TrackInfoBean oldItem, @NonNull @NotNull TrackInfoBean newItem) {
+                        return oldItem.index == newItem.index;
+                    }
+                }, bean, trackInfo.getAudioSelected(false));
+                dialog.show();
+            }
         });
         mVideoView.setVideoController(mController);
+    }
+
+    //设置字幕
+    void setSubtitle(String path) {
+        if (path != null && path .length() > 0) {
+            // 设置字幕
+            mController.mSubtitleView.setVisibility(View.INVISIBLE);
+            mController.mSubtitleView.setSubtitlePath(path);
+            mController.mSubtitleView.setVisibility(View.VISIBLE);
+        }
     }
 
     void setTip(String msg, boolean loading, boolean err) {
@@ -230,6 +367,7 @@ public class PlayFragment extends BaseLazyFragment {
                 stopParse();
                 if (mVideoView != null) {
                     mVideoView.release();
+
                     if (url != null) {
                         try {
                             int playerType = mVodPlayerCfg.getInt("pl");
@@ -238,16 +376,7 @@ public class PlayFragment extends BaseLazyFragment {
                                 String playTitle = mVodInfo.name + " " + vs.name;
                                 setTip("调用外部播放器" + PlayerHelper.getPlayerName(playerType) + "进行播放", true, false);
                                 boolean callResult = false;
-                                switch (playerType) {
-                                    case 10: {
-                                        callResult = MXPlayer.run(requireActivity(), url, playTitle, playSubtitle, headers);
-                                        break;
-                                    }
-                                    case 11: {
-                                        callResult = ReexPlayer.run(requireActivity(), url, playTitle, playSubtitle, headers);
-                                        break;
-                                    }
-                                }
+                                callResult = PlayerHelper.runExternalPlayer(playerType, requireActivity(), url, playTitle, playSubtitle, headers);
                                 setTip("调用外部播放器" + PlayerHelper.getPlayerName(playerType) + (callResult ? "成功" : "失败"), callResult, !callResult);
                                 return;
                             }
@@ -264,6 +393,24 @@ public class PlayFragment extends BaseLazyFragment {
                         }
                         mVideoView.start();
                         mController.resetSpeed();
+
+                        //加载字幕开始
+                        // 绑定MediaPlayer
+                        mController.mSubtitleView.bindToMediaPlayer(mVideoView.getMediaPlayer());
+                        mController.mSubtitleView.setVisibility(View.INVISIBLE);
+                        mController.mSubtitleView.setPlaySubtitleCacheKey(subtitleCacheKey);
+                        if (playSubtitle != null && playSubtitle .length() > 0) {
+                            // 设置字幕
+                            mController.mSubtitleView.setSubtitlePath(playSubtitle);
+                            mController.mSubtitleView.setVisibility(View.VISIBLE);
+                        } else {
+                            String subtitlePathCache = (String)CacheManager.getCache(MD5.string2MD5(subtitleCacheKey));
+                            if (subtitlePathCache != null && !subtitlePathCache.isEmpty()) {
+                                mController.mSubtitleView.setSubtitlePath(subtitlePathCache);
+                                mController.mSubtitleView.setVisibility(View.VISIBLE);
+                            }
+                        }
+                        //加载字幕结束
                     }
                 }
             }
@@ -281,6 +428,7 @@ public class PlayFragment extends BaseLazyFragment {
                         boolean parse = info.optString("parse", "1").equals("1");
                         boolean jx = info.optString("jx", "0").equals("1");
                         playSubtitle = info.optString("subt", /*"https://dash.akamaized.net/akamai/test/caption_test/ElephantsDream/ElephantsDream_en.vtt"*/"");
+                        subtitleCacheKey = info.optString("subtKey", null);
                         String playUrl = info.optString("playUrl", "");
                         String flag = info.optString("flag");
                         String url = info.getString("url");
@@ -488,9 +636,8 @@ public class PlayFragment extends BaseLazyFragment {
 
         stopParse();
         if(mVideoView!=null) mVideoView.release();
+        String subtitleCacheKey = mVodInfo.sourceKey + "-" + mVodInfo.id + "-" + mVodInfo.playFlag + "-" + mVodInfo.playIndex + "-subt";
         String progressKey = mVodInfo.sourceKey + mVodInfo.id + mVodInfo.playFlag + mVodInfo.playIndex;
-        //存储播放进度
-        Object bodyKey=CacheManager.getCache(MD5.string2MD5(progressKey));
         //重新播放清除现有进度
         if (reset) CacheManager.delete(MD5.string2MD5(progressKey), 0);
         if (Thunder.play(vs.url, new Thunder.ThunderCallback() {
@@ -515,12 +662,11 @@ public class PlayFragment extends BaseLazyFragment {
             mController.showParse(false);
             return;
         }
-        sourceViewModel.getPlay(sourceKey, mVodInfo.playFlag, progressKey, vs.url);
-        //执行重新播放后还原之前的进度
-//        if (reset) CacheManager.save(MD5.string2MD5(progressKey),bodyKey);
+        sourceViewModel.getPlay(sourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey);
     }
 
     private String playSubtitle;
+    private String subtitleCacheKey;
     private String progressKey;
     private String parseFlag;
     private String webUrl;
